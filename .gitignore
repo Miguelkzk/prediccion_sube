@@ -1,0 +1,15 @@
+# Entorno virtual de Python
+.venv/
+
+# Archivos de modelo generados (muy importante)
+*.pkl
+
+# Archivos de datos (el notebook los descarga)
+*.csv
+
+# Cache y archivos de Jupyter
+.ipynb_checkpoints/
+__pycache__/
+
+# Archivos de sistema (OS)
+.DS_Store

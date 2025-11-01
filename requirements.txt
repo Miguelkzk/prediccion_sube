@@ -1,0 +1,12 @@
+# --- requirements.txt (CORREGIDO) ---
+streamlit
+pandas
+numpy
+joblib
+scikit-learn
+lightgbm
+requests
+notebook
+jupyterlab
+matplotlib
+seaborn

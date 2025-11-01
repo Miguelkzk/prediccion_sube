@@ -1,0 +1,1 @@
+{"learning_rate": 0.015249965725213558, "num_leaves": 158, "min_child_samples": 14, "max_depth": 9, "lambda_l1": 3.425445902633376e-07, "lambda_l2": 3.850031979199519e-08, "feature_fraction": 0.9693313223519999, "bagging_fraction": 0.9793792198447356, "bagging_freq": 8, "objective": "regression", "metric": "mae", "verbosity": -1, "seed": 42}
