@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import joblib
 import altair as alt
+import os
 
 # --- 1. CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(
@@ -11,7 +12,13 @@ st.set_page_config(
     layout="wide"
 )
 
-# --- 2. CONSTANTES Y MAPEOS
+
+BASE_DIR = os.path.dirname(__file__)
+MODEL_PATH = os.path.join(BASE_DIR, "modelo_pipeline_complejo.pkl")
+PROMEDIOS_PATH = os.path.join(BASE_DIR, "datos_promedio.pkl")
+CSV_PATH = os.path.join(BASE_DIR, "sube_clima_final_Mendoza.csv")
+
+# --- 2. CONSTANTES Y MAPEOS ---
 ALL_FEATURES = [
     'Linea', 'Nombre_Empresa', 'Provincia', 'Municipio',
     'Temp_media', 'Temp_max', 'Temp_min', 'Lluvia_Binaria', 'Precip_Total',
@@ -33,14 +40,15 @@ CONDICIONES_ADVERSAS_EJEMPLO = [
     'Lluvia helada', 'Lluvia helada intensa', 'Tormenta eléctrica', 'Tormenta eléctrica intensa', 'Tormenta'
 ]
 
-# --- 3. FUNCIONES DE CARGA (¡Optimizadas!) ---
+# --- 3. FUNCIONES DE CARGA ---
 
 @st.cache_resource
 def load_models():
     """Carga los modelos (pipeline y promedios) una sola vez."""
     try:
-        pipeline = joblib.load("modelo_pipeline_complejo.pkl")
-        promedios_data = joblib.load("datos_promedio.pkl")
+        # Usa las rutas absolutas
+        pipeline = joblib.load(MODEL_PATH)
+        promedios_data = joblib.load(PROMEDIOS_PATH)
         return pipeline, promedios_data
     except FileNotFoundError:
         return None, None
@@ -51,7 +59,6 @@ def load_csv_data(csv_path):
     try:
         df = pd.read_csv(csv_path)
         df['Dia'] = pd.to_datetime(df['Dia'])
-        # Lógica para asegurar que 'Condicion_Adversa' exista
         if 'Condicion_Adversa' not in df.columns and 'Condicion_Cielo' in df.columns:
             df['Condicion_Adversa'] = df['Condicion_Cielo'].isin([7, 8, 9, 5, 6, 10, 11, 25, 26, 27]).astype(int)
         elif 'Condicion_Adversa' not in df.columns:
@@ -60,47 +67,37 @@ def load_csv_data(csv_path):
     except FileNotFoundError:
         return None
 
-# --- FUNCIÓN CACHEADA PARA GRÁFICOS! ---
 @st.cache_data
 def get_viz_dataframes(df_raw):
     """
     Realiza TODOS los cálculos pesados de Pandas una sola vez
     y devuelve DataFrames pequeños listos para graficar.
     """
-    # Hacemos una copia para no modificar el df cacheado original
     df = df_raw.copy()
-
     # 1. Datos para Gráfico Semanal
     df_semanal = df.set_index('Dia').resample('W')['Cantidad'].sum().reset_index()
-
     # 2. Datos para Gráfico por Línea
     df_linea = df.groupby('Linea')['Cantidad'].mean().reset_index()
-
     # 3. Datos para Gráfico por Día
     df_dia = df.groupby('Dia_Semana')['Cantidad'].mean().reset_index()
-
-    # 4. Datos para Histograma (¡Optimizado!)
-    # Pre-calculamos el histograma con NumPy (mucho más rápido)
-    q_99 = df['Cantidad'].quantile(0.99) # Usar percentil 99 para un gráfico más claro
+    # 4. Datos para Histograma (Optimizado)
+    q_99 = df['Cantidad'].quantile(0.99)
     counts, bins = np.histogram(df['Cantidad'], bins=100, range=(0, q_99))
     hist_data = pd.DataFrame({
         'Frecuencia': counts, 'Rango_Inicio': bins[:-1], 'Rango_Fin': bins[1:]
     })
     hist_data['Rango_Etiqueta'] = hist_data.apply(lambda r: f"{int(r['Rango_Inicio'])}-{int(r['Rango_Fin'])}", axis=1)
-
     # 5. Datos para Gráfico de Días Adversos
     df['Tipo_Dia'] = df['Condicion_Adversa'].map({0: 'Día Normal', 1: 'Día Adverso'})
     df_adverso = df.groupby('Tipo_Dia')['Cantidad'].mean().reset_index()
-
     # 6. Datos para Gráfico de Temperatura
     df['Temp_Redondeada'] = df['Temp_media'].round()
     df_temp_agg = df.groupby('Temp_Redondeada')['Cantidad'].mean().reset_index()
-
     return df_semanal, df_linea, df_dia, hist_data, df_adverso, df_temp_agg
 
-# --- 4. CARGAR DATOS Y MODELOS ---
 pipeline, promedios_data = load_models()
-df_viz_raw = load_csv_data("sube_clima_final_Mendoza.csv") # Carga el DF crudo
+df_viz_raw = load_csv_data(CSV_PATH)
+
 
 # Variables globales para predicción
 if promedios_data:
@@ -118,7 +115,6 @@ if 'prediction_made' not in st.session_state:
     st.session_state.inputs = {}
 
 
-# --- 5. TÍTULO PRINCIPAL Y PESTAÑAS ---
 st.title("🚌 Proyecto de Predicción de Pasajeros")
 
 tab_info, tab_pred, tab_viz = st.tabs([
@@ -128,19 +124,19 @@ tab_info, tab_pred, tab_viz = st.tabs([
 ])
 
 
-# --- PESTAÑA 1: SOBRE EL PROYECTO ---
 with tab_info:
     st.header("Sobre el Proyecto")
 
     col1, col2 = st.columns(2)
 
     with col1:
-        st.subheader("Integrantes del grupo 14")
+        st.subheader("Integrantes del grupo")
         members = [
             "Juan Manuel Valdivia", "Lucio Malgioglio",
             "Lucianda Maldonado", "Miguel Kruzliak",
         ]
         for m in members: st.markdown(f"- {m}")
+
 
         st.subheader("Herramientas Utilizadas")
         st.markdown("""
@@ -178,7 +174,6 @@ with tab_info:
             y el modelo `LGBM`.
         """)
 
-# --- PESTAÑA 2: PREDICCIÓN---
 with tab_pred:
     st.header("Formulario de Predicción")
 
@@ -260,17 +255,15 @@ with tab_pred:
                 st.session_state.prediction_made = False
                 st.rerun()
 
-# --- PESTAÑA 3: VISUALIZACIONES ---
 with tab_viz:
     st.header("Hallazgos y Visualizaciones")
 
     if df_viz_raw is None:
-        st.error("Error: No se encontró el archivo 'sube_clima_final_Mendoza.csv'.")
-        st.info("Asegúrate de que esté en la carpeta 'dev/'.")
+        st.error(f"Error: No se encontró el archivo en la ruta: {CSV_PATH}")
+        st.info("Asegúrate de que el archivo CSV esté en la carpeta 'dev/' y subido a GitHub.")
     else:
-        st.markdown("Exploración de los datos históricos")
+        st.markdown(f"Exploración de los datos históricos (`{os.path.basename(CSV_PATH)}`)")
 
-        # Llamamos a la función cacheada. Esto es instantáneo después de la primera vez.
         with st.spinner("Procesando gráficos por primera vez..."):
             df_semanal, df_linea, df_dia, hist_data, df_adverso, df_temp_agg = get_viz_dataframes(df_viz_raw)
 
@@ -328,7 +321,7 @@ with tab_viz:
                 tooltip=['Tipo_Dia', 'Cantidad']
             ).interactive()
             st.altair_chart(chart_adverso, use_container_width=True)
-        with col_clima2:
+        with col2:
             st.markdown("**Temperatura Media vs. Pasajeros**")
             st.markdown("Este gráfico muestra la tendencia de viajes según la temperatura. **La gente viaja más en días templados.**")
 
