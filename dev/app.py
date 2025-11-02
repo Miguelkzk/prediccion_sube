@@ -265,7 +265,7 @@ with tab_viz:
     st.header("Hallazgos y Visualizaciones")
 
     if df_viz_raw is None:
-        st.error("Error: No se encontró el archivo 'sube_clima_final_Mendoza (2).csv'.")
+        st.error("Error: No se encontró el archivo 'sube_clima_final_Mendoza.csv'.")
         st.info("Asegúrate de que esté en la carpeta 'dev/'.")
     else:
         st.markdown("Exploración de los datos históricos")
