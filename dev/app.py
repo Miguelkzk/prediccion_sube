@@ -321,7 +321,7 @@ with tab_viz:
                 tooltip=['Tipo_Dia', 'Cantidad']
             ).interactive()
             st.altair_chart(chart_adverso, use_container_width=True)
-        with col2:
+        with col_clima2:
             st.markdown("**Temperatura Media vs. Pasajeros**")
             st.markdown("Este gráfico muestra la tendencia de viajes según la temperatura. **La gente viaja más en días templados.**")
 
