@@ -10,3 +10,4 @@ notebook
 jupyterlab
 matplotlib
 seaborn
+altair
