@@ -133,7 +133,7 @@ with tab_info:
         st.subheader("Integrantes del grupo")
         members = [
             "Juan Manuel Valdivia", "Lucio Malgioglio",
-            "Lucianda Maldonado", "Miguel Kruzliak",
+            "Luciana Maldonado", "Miguel Kruzliak",
         ]
         for m in members: st.markdown(f"- {m}")
 
