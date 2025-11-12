@@ -1,9 +1,12 @@
+# --- app.py (Versión 4.7 - Filtro de Línea + Correcciones) ---
+
 import streamlit as st
 import pandas as pd
 import numpy as np
 import joblib
 import altair as alt
 import os
+from sklearn.metrics import mean_absolute_error
 
 # --- 1. CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(
@@ -12,13 +15,13 @@ st.set_page_config(
     layout="wide"
 )
 
-
+# --- Rutas Absolutas (Sin cambios) ---
 BASE_DIR = os.path.dirname(__file__)
 MODEL_PATH = os.path.join(BASE_DIR, "modelo_pipeline_complejo.pkl")
 PROMEDIOS_PATH = os.path.join(BASE_DIR, "datos_promedio.pkl")
 CSV_PATH = os.path.join(BASE_DIR, "sube_clima_final_Mendoza.csv")
 
-# --- 2. CONSTANTES Y MAPEOS ---
+# --- 2. CONSTANTES Y MAPEOS (Sin cambios) ---
 ALL_FEATURES = [
     'Linea', 'Nombre_Empresa', 'Provincia', 'Municipio',
     'Temp_media', 'Temp_max', 'Temp_min', 'Lluvia_Binaria', 'Precip_Total',
@@ -40,13 +43,12 @@ CONDICIONES_ADVERSAS_EJEMPLO = [
     'Lluvia helada', 'Lluvia helada intensa', 'Tormenta eléctrica', 'Tormenta eléctrica intensa', 'Tormenta'
 ]
 
-# --- 3. FUNCIONES DE CARGA ---
+# --- 3. FUNCIONES DE CARGA (Corregidas) ---
 
 @st.cache_resource
 def load_models():
     """Carga los modelos (pipeline y promedios) una sola vez."""
     try:
-        # Usa las rutas absolutas
         pipeline = joblib.load(MODEL_PATH)
         promedios_data = joblib.load(PROMEDIOS_PATH)
         return pipeline, promedios_data
@@ -55,14 +57,43 @@ def load_models():
 
 @st.cache_data
 def load_csv_data(csv_path):
-    """Carga el CSV crudo una sola vez."""
+    """Carga el CSV crudo y aplica la INGENIERÍA DE FEATURES una sola vez."""
     try:
         df = pd.read_csv(csv_path)
         df['Dia'] = pd.to_datetime(df['Dia'])
-        if 'Condicion_Adversa' not in df.columns and 'Condicion_Cielo' in df.columns:
+
+        # --- INICIO DE INGENIERÍA DE FEATURES (de Celda 4) ---
+        if 'Condicion_Cielo' in df.columns:
             df['Condicion_Adversa'] = df['Condicion_Cielo'].isin([7, 8, 9, 5, 6, 10, 11, 25, 26, 27]).astype(int)
-        elif 'Condicion_Adversa' not in df.columns:
-            df['Condicion_Adversa'] = 0 # Fallback
+        else:
+            df['Condicion_Adversa'] = 0
+
+        df['Mes'] = df['Dia'].dt.month
+        df['Es_FinDeSemana'] = df['Dia_Semana'].isin(['Saturday', 'Sunday']).astype(int)
+        df['Temp_Templada'] = df['Temp_media'].between(8,28).astype(int)
+        df['Temp_Extrema'] = ((df['Temp_media'] < 8) | (df['Temp_media'] > 28)).astype(int)
+        df['Adversa_Finde'] = df['Condicion_Adversa'] * df['Es_FinDeSemana']
+        df['Feriado_TempExtrema'] = df['Feriado'] * df['Temp_Extrema']
+
+        df = df.sort_values(['Linea','Dia'])
+        df['Cantidad_lag_1'] = df.groupby('Linea')['Cantidad'].shift(1)
+        df['Cantidad_lag_7'] = df.groupby('Linea')['Cantidad'].shift(7)
+        df['Cantidad_ma_7'] = df.groupby('Linea')['Cantidad'].transform(lambda x: x.rolling(7, min_periods=1).mean())
+
+        for col in ['Cantidad_lag_1', 'Cantidad_lag_7', 'Cantidad_ma_7']:
+            df[col] = df.groupby('Linea')[col].transform(lambda x: x.fillna(x.mean()))
+
+        # Rellenar NaNs numéricos y categóricos restantes
+        try:
+            df = df.fillna(df.mean(numeric_only=True))
+        except TypeError:
+            numeric_cols = df.select_dtypes(include=np.number).columns
+            df[numeric_cols] = df[numeric_cols].fillna(df[numeric_cols].mean())
+
+        cat_cols = df.select_dtypes(include=['object', 'category']).columns
+        df[cat_cols] = df[cat_cols].fillna('missing')
+        # --- FIN DE INGENIERÍA DE FEATURES ---
+
         return df
     except FileNotFoundError:
         return None
@@ -74,6 +105,7 @@ def get_viz_dataframes(df_raw):
     y devuelve DataFrames pequeños listos para graficar.
     """
     df = df_raw.copy()
+
     # 1. Datos para Gráfico Semanal
     df_semanal = df.set_index('Dia').resample('W')['Cantidad'].sum().reset_index()
     # 2. Datos para Gráfico por Línea
@@ -93,51 +125,45 @@ def get_viz_dataframes(df_raw):
     # 6. Datos para Gráfico de Temperatura
     df['Temp_Redondeada'] = df['Temp_media'].round()
     df_temp_agg = df.groupby('Temp_Redondeada')['Cantidad'].mean().reset_index()
+
     return df_semanal, df_linea, df_dia, hist_data, df_adverso, df_temp_agg
 
+# --- 4. CARGAR DATOS Y MODELOS (Sin cambios) ---
 pipeline, promedios_data = load_models()
 df_viz_raw = load_csv_data(CSV_PATH)
 
-
 # Variables globales para predicción
-if promedios_data:
+if promedios_data and df_viz_raw is not None:
     promedios_df = promedios_data['promedios']
     media_global = promedios_data['media_global']
     promedios_lookup = promedios_df.set_index(['Linea', 'Dia_Semana'])
-    LINEAS_EJEMPLO = sorted(promedios_df['Linea'].unique())
+    # Usamos las líneas del CSV cargado, que es más robusto
+    LINEAS_EJEMPLO = sorted(df_viz_raw['Linea'].unique())
 else:
     promedios_df, media_global, promedios_lookup = None, 0, None
     LINEAS_EJEMPLO = ["Error: Cargar Modelos"]
 
-if 'prediction_made' not in st.session_state:
-    st.session_state.prediction_made = False
-    st.session_state.prediccion_final = 0
-    st.session_state.inputs = {}
-
-
+# --- 5. TÍTULO PRINCIPAL Y PESTAÑAS (Sin cambios) ---
 st.title("🚌 Proyecto de Predicción de Pasajeros")
 
-tab_info, tab_pred, tab_viz = st.tabs([
+tab_info, tab_eval, tab_viz = st.tabs([
     "Sobre el Proyecto",
-    "Predicción",
+    "Evaluación del Modelo",
     "Visualizaciones"
 ])
 
-
+# --- PESTAÑA 1: SOBRE EL PROYECTO (Sin cambios) ---
 with tab_info:
     st.header("Sobre el Proyecto")
-
     col1, col2 = st.columns(2)
-
     with col1:
         st.subheader("Integrantes del grupo")
         members = [
             "Juan Manuel Valdivia", "Lucio Malgioglio",
-            "Luciana Maldonado", "Miguel Kruzliak",
+            "Lucianda Maldonado", "Miguel Kruzliak",
         ]
         for m in members: st.markdown(f"- {m}")
-
-
+        st.image("https://www.mendoza.gov.ar/wp-content/uploads/2023/02/mendotran-sube-portada.jpg")
         st.subheader("Herramientas Utilizadas")
         st.markdown("""
         - **Python:** Lenguaje principal.
@@ -147,7 +173,6 @@ with tab_info:
         - **Streamlit:** Para construir esta aplicación web.
         - **Altair:** Para la creación de los gráficos interactivos.
         """)
-
     with col2:
         st.subheader("Objetivo")
         st.markdown("""
@@ -155,16 +180,13 @@ with tab_info:
         crear un modelo capaz de predecir la demanda de cantidad del transporte
         público en Mendoza.
         """)
-
         st.subheader("Conjunto de Datos")
         st.markdown("""
         Se utilizó un conjunto de datos que combina dos fuentes:
         1.  **Datos de SUBE:** Registros diarios de transacciones por línea de colectivo.
         2.  **Datos Climáticos:** Información meteorológica (temperatura, humedad, viento, etc.)
             para los mismos días.
-
         """)
-
         st.subheader("Modelo de Machine Learning")
         st.markdown("""
         -   **Modelo:** `LightGBM Regressor`.
@@ -174,87 +196,123 @@ with tab_info:
             y el modelo `LGBM`.
         """)
 
-with tab_pred:
-    st.header("Formulario de Predicción")
+# --- PESTAÑA 2: EVALUACIÓN DEL MODELO (¡Sección Modificada!) ---
+with tab_eval:
+    st.header("📈 Evaluación: Predicción vs. Datos Reales")
 
-    if pipeline is None or promedios_data is None:
-        st.error("Error: Archivos de modelo ('*.pkl') no encontrados.")
-        st.info("Por favor, ejecuta primero tu notebook para generar los artefactos.")
+    if pipeline is None or df_viz_raw is None:
+        st.error("Error: No se pudieron cargar los modelos o los datos CSV.")
+        st.info("Asegúrate de que los archivos .pkl y .csv están en el repositorio.")
+    else:
+        st.markdown("""
+        Esta pestaña te permite comparar el rendimiento del modelo contra los datos reales del dataset.
+        Selecciona una línea (opcional) y cuántos de los últimos días quieres visualizar:
+        """)
 
-    elif not st.session_state.prediction_made:
-        st.markdown("Completá los parámetros para estimar la cantidad de pasajeros.")
-        with st.form(key="prediction_form"):
-            col1, col2 = st.columns(2)
-            with col1:
-                linea = st.selectbox('Línea', options=LINEAS_EJEMPLO, key="linea")
-                dia_semana_es = st.selectbox('Día de la Semana', options=list(DIAS_MAP.keys()), key="dia_semana")
-                mes_es = st.selectbox('Mes', options=list(MESES_MAP.keys()), key="mes")
-                feriado = st.selectbox('¿Es Feriado?', options=[0, 1], format_func=lambda x: 'Sí' if x == 1 else 'No', key="feriado")
-            with col2:
-                condicion_adversa_str = st.selectbox('Precipitación', options=CONDICIONES_ADVERSAS_EJEMPLO, key="condicion_adversa")
-                humedad_media = st.slider('Humedad Media (%)', 0.0, 100.0, 50.0, 1.0, key="humedad_media")
-                temp_media = st.slider('Temperatura Media (°C)', -10.0, 40.0, 20.0, 0.5, key="temp_media")
-                temp_min = st.slider('Temperatura Mínima (°C)', -15.0, 35.0, 15.0, 0.5, key="temp_min")
-                temp_max = st.slider('Temperatura Máxima (°C)', -5.0, 45.0, 25.0, 0.5, key="temp_max")
-                vel_viento = st.slider('Velocidad Media del Viento (km/h)', 0.0, 70.0, 15.0, 1.0, key="vel_viento")
-
-            _, col_btn_center, _ = st.columns([2, 1, 2]) # Columnas para centrar el botón
-            with col_btn_center:
-                submit_button = st.form_submit_button(label='Predecir Cantidad', use_container_width=True)
-
-        if submit_button:
-            mes_num = MESES_MAP[mes_es]
-            dia_eng = DIAS_MAP[dia_semana_es]
-            st.session_state.inputs = {
-                "Línea": linea, "Día de la Semana": dia_semana_es, "Mes": mes_es,
-                "Feriado": "Sí" if feriado == 1 else "No", "Precipitación": condicion_adversa_str,
-                "Humedad Media": humedad_media, "Temp. Media": temp_media,
-                "Temp. Mínima": temp_min, "Temp. Máxima": temp_max, "Velocidad Viento": vel_viento
-            }
-            try: avg_cantidad = promedios_lookup.loc[(linea, dia_eng)]['Cantidad']
-            except KeyError: avg_cantidad = media_global
-            input_data = {feature: [np.nan] for feature in ALL_FEATURES}
-            condicion_adversa_bool = 0 if condicion_adversa_str == 'Ninguna' else 1
-            input_data.update({
-                'Linea': [linea], 'Dia_Semana': [dia_eng], 'Mes': [mes_num], 'Feriado': [feriado],
-                'Condicion_Adversa': [condicion_adversa_bool], 'Humedad_Media': [humedad_media],
-                'Temp_media': [temp_media], 'Temp_min': [temp_min], 'Temp_max': [temp_max],
-                'Vel_Prom_Viento': [vel_viento], 'Cantidad_lag_1': [avg_cantidad],
-                'Cantidad_lag_7': [avg_cantidad], 'Cantidad_ma_7': [avg_cantidad]
-            })
-            input_df = pd.DataFrame(input_data)
-            for col in CAT_FEATURES: input_df[col] = input_df[col].astype(str)
-            prediccion_log = pipeline.predict(input_df)
-            prediccion_final = np.expm1(prediccion_log)
-            st.session_state.prediccion_final = prediccion_final[0]
-            st.session_state.prediction_made = True
-            st.rerun()
-
-    elif st.session_state.prediction_made:
-        st.header("Resultado de la Predicción")
-        st.metric(label="Pasajeros Predichos (Cantidad) para la ciudad de Mendoza.", value=f"{int(st.session_state.prediccion_final):,}")
-        st.divider()
-        st.subheader("Parámetros Utilizados")
         col1, col2 = st.columns(2)
-        inputs = st.session_state.inputs
-        with col1:
-            st.metric(label="Línea", value=inputs["Línea"])
-            st.metric(label="Día de la Semana", value=inputs["Día de la Semana"])
-            st.metric(label="Mes", value=inputs["Mes"])
-            st.metric(label="Feriado", value=inputs["Feriado"])
-            st.metric(label="Precipitación", value=inputs["Precipitación"])
-        with col2:
-            st.metric(label="Humedad", value=f"{inputs['Humedad Media']}%")
-            st.metric(label="Temp. Media", value=f"{inputs['Temp. Media']}°C")
-            st.metric(label="Temp. Mínima", value=f"{inputs['Temp. Mínima']}°C")
-            st.metric(label="Temp. Máxima", value=f"{inputs['Temp. Máxima']}°C")
-            st.metric(label="Vel. Media del Viento", value=f"{inputs['Velocidad Viento']} km/h")
-        _, col_btn_center, _ = st.columns([1, 1, 1])
-        with col_btn_center:
-            if st.button("Hacer otra predicción", use_container_width=True):
-                st.session_state.prediction_made = False
-                st.rerun()
 
+        with col1:
+            linea_options = ["Todas las líneas (Agregado)"] + LINEAS_EJEMPLO
+            linea_seleccionada = st.selectbox("Selecciona una Línea (opcional):", options=linea_options)
+
+        with col2:
+            # Usamos nunique() sobre los días del DF *cargado*
+            max_dias = df_viz_raw['Dia'].nunique()
+            if max_dias < 7:
+                st.warning("El dataset es muy pequeño para esta evaluación.")
+                n_dias = 0
+            else:
+                n_dias = st.number_input(
+                    "Cantidad de últimos días a comparar:",
+                    min_value=7,
+                    max_value=max_dias,
+                    value=min(30, max_dias),
+                    step=1
+                )
+
+        if n_dias > 0:
+            with st.spinner(f"Calculando predicciones para '{linea_seleccionada}'..."):
+                try:
+                    # 1. Data Subsetting (Correcto)
+                    last_n_dates = df_viz_raw['Dia'].sort_values(ascending=False).unique()[:n_dias][::-1]
+                    df_period = df_viz_raw[df_viz_raw['Dia'].isin(last_n_dates)].copy()
+
+                    # 2. Filtrado Opcional
+                    if linea_seleccionada == "Todas las líneas (Agregado)":
+                        st.info("Mostrando la suma agregada de todas las líneas para los últimos N días.")
+                        X_eval = df_period.copy()
+                    else: # Caso de una línea específica
+                        st.info(f"Mostrando la evaluación para: {linea_seleccionada}")
+                        X_eval = df_period[df_period['Linea'] == linea_seleccionada].copy()
+
+                        if X_eval.empty:
+                            st.warning(f"No se encontraron datos para '{linea_seleccionada}' en los últimos {n_dias} días.")
+                            st.stop()
+
+                    # 3. Pre-procesamiento (¡Importante!)
+                    # Rellenar NaNs categóricos y numéricos ANTES de predecir
+                    # El pipeline de sklearn es sensible a NaNs incluso si tiene un imputer
+                    for col in CAT_FEATURES:
+                        X_eval[col] = X_eval[col].fillna('missing').astype(str)
+
+                    numeric_cols = X_eval.select_dtypes(include=np.number).columns
+                    # Llenamos con 0 para que la suma/agregación no se vea afectada por NaNs
+                    X_eval[numeric_cols] = X_eval[numeric_cols].fillna(0)
+
+                    # 4. Predicción
+                    prediccion_log = pipeline.predict(X_eval)
+                    X_eval['Prediccion'] = np.expm1(prediccion_log)
+                    X_eval['Valor Real'] = X_eval['Cantidad']
+
+                    # 5. Agregación (¡Crítico para gráficos limpios!)
+                    # Suma por día. Esto funciona para "Todas" y para "Una línea"
+                    df_agg = X_eval.groupby('Dia')[['Valor Real', 'Prediccion']].sum().reset_index()
+                    df_grafico = df_agg.rename(columns={'Prediccion': 'Predicción del Modelo'})
+
+                    # 6. Preparar datos para el gráfico
+                    df_grafico['Fecha Real'] = df_grafico['Dia'].dt.strftime('%Y-%m-%d')
+                    df_grafico['Dia (Nro)'] = np.arange(1, len(df_grafico) + 1)
+
+                    # --- ¡CORRECCIÓN DEL MELT! ---
+                    df_melted = df_grafico.melt(
+                        id_vars=['Dia (Nro)', 'Fecha Real'],
+                        value_vars=['Valor Real', 'Predicción del Modelo'], # Ser explícito
+                        var_name='Tipo de Valor',
+                        value_name='Cantidad_Melted' # Usar un nombre de valor nuevo
+                    )
+
+                    # 7. Gráfico de Altair
+                    st.subheader(f"Comparación de los Últimos {n_dias} Días ({linea_seleccionada})")
+
+                    chart = alt.Chart(df_melted).mark_line(point=True).encode(
+                        x=alt.X('Dia (Nro)', title=f'Últimos {n_dias} Días (en orden)', axis=alt.Axis(format='d')),
+                        # Usar el nuevo value_name 'Cantidad_Melted'
+                        y=alt.Y('Cantidad_Melted', title='Cantidad de Pasajeros'),
+                        color=alt.Color('Tipo de Valor', title="Valor:"),
+                        tooltip=[
+                            alt.Tooltip('Dia (Nro)', title="Día Nro."),
+                            alt.Tooltip('Fecha Real'),
+                            'Tipo de Valor',
+                            # Usar el nuevo value_name 'Cantidad_Melted'
+                            alt.Tooltip('Cantidad_Melted', title="Cantidad", format=',.0f')
+                        ]
+                    ).interactive()
+
+                    st.altair_chart(chart, use_container_width=True)
+
+                    # 8. Métrica de Error (MAE)
+                    mae = mean_absolute_error(df_grafico['Valor Real'], df_grafico['Predicción del Modelo'])
+                    st.metric(
+                        label=f"Error Absoluto Medio (MAE) para este período",
+                        value=f"{mae:,.2f} pasajeros"
+                    )
+                    st.info(f"El MAE indica que, en promedio, las predicciones del modelo para este período se desvían en {mae:,.2f} pasajeros del valor real.")
+
+                except Exception as e:
+                    st.error(f"Ocurrió un error al generar la predicción: {e}")
+                    st.exception(e)
+
+# --- PESTAÑA 3: VISUALIZACIONES (Sin cambios) ---
 with tab_viz:
     st.header("Hallazgos y Visualizaciones")
 
@@ -266,7 +324,6 @@ with tab_viz:
 
         with st.spinner("Procesando gráficos por primera vez..."):
             df_semanal, df_linea, df_dia, hist_data, df_adverso, df_temp_agg = get_viz_dataframes(df_viz_raw)
-
 
         st.subheader("1. Serie Temporal de Pasajeros (Agregado Semanal)")
         st.markdown("Agregamos la cantidad total de pasajeros por semana para ver la tendencia general, patrones estacionales y el impacto de eventos como la pandemia.")
@@ -289,12 +346,28 @@ with tab_viz:
             st.altair_chart(chart_linea, use_container_width=True)
         with col2:
             st.subheader("3. Pasajeros Promedio por Día")
+
             dias_orden = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
-            chart_dia = alt.Chart(df_dia).mark_bar().encode(
-                x=alt.X('Dia_Semana', sort=dias_orden, title='Día de la Semana'),
-                y=alt.Y('Cantidad', title='Pasajeros Promedio'),
-                tooltip=['Dia_Semana', 'Cantidad']
-            ).interactive()
+
+            base = alt.Chart(df_dia).encode(
+                y=alt.Y('Dia_Semana', sort=dias_orden, title='Día de la Semana'),
+                x=alt.X('Cantidad', title='Pasajeros Promedio'),
+                tooltip=['Dia_Semana', alt.Tooltip('Cantidad', format=',.0f')]
+            )
+
+            bars = base.mark_bar()
+
+            text = base.mark_text(
+                align='left',
+                baseline='middle',
+                dx=3
+            ).encode(
+                text=alt.Text('Cantidad', format=',.0f'),
+                color=alt.value('black')
+            )
+
+            chart_dia = (bars + text).interactive()
+
             st.altair_chart(chart_dia, use_container_width=True)
 
         st.subheader("4. Distribución de la variable 'Cantidad'")
@@ -321,7 +394,7 @@ with tab_viz:
                 tooltip=['Tipo_Dia', 'Cantidad']
             ).interactive()
             st.altair_chart(chart_adverso, use_container_width=True)
-        with col_clima2:
+        with col2:
             st.markdown("**Temperatura Media vs. Pasajeros**")
             st.markdown("Este gráfico muestra la tendencia de viajes según la temperatura. **La gente viaja más en días templados.**")
 
